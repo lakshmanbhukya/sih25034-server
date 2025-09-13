@@ -28,6 +28,64 @@ class Cache {
   clear() {
     this.cache.clear();
   }
+
+  size() {
+    return this.cache.size;
+  }
+
+  keys() {
+    return Array.from(this.cache.keys());
+  }
+
+  stats() {
+    const now = Date.now();
+    let expired = 0;
+    let active = 0;
+    
+    for (const [key, item] of this.cache.entries()) {
+      if (now > item.expiry) {
+        expired++;
+      } else {
+        active++;
+      }
+    }
+    
+    return {
+      total: this.cache.size,
+      active,
+      expired
+    };
+  }
+
+  // Clear cache by pattern
+  clearByPattern(pattern) {
+    const regex = new RegExp(pattern);
+    const keysToDelete = [];
+    
+    for (const key of this.cache.keys()) {
+      if (regex.test(key)) {
+        keysToDelete.push(key);
+      }
+    }
+    
+    keysToDelete.forEach(key => this.cache.delete(key));
+    return keysToDelete.length;
+  }
+
+  // Clear expired entries
+  clearExpired() {
+    const now = Date.now();
+    const expiredKeys = [];
+    
+    for (const [key, item] of this.cache.entries()) {
+      if (now > item.expiry) {
+        expiredKeys.push(key);
+      }
+    }
+    
+    expiredKeys.forEach(key => this.cache.delete(key));
+    return expiredKeys.length;
+  }
 }
 
 module.exports = new Cache();
