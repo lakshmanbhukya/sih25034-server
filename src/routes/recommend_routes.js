@@ -59,7 +59,19 @@ router.post("/recommend", authenticateToken, async (req, res) => {
       body: JSON.stringify(apiPayload),
     });
 
-    const data = await response.json();
+    if (!response.ok) {
+      console.error(`External API error: ${response.status} ${response.statusText}`);
+      return res.status(500).json({ error: "External recommendation service unavailable" });
+    }
+
+    const responseText = await response.text();
+    let data;
+    try {
+      data = JSON.parse(responseText);
+    } catch (parseError) {
+      console.error('Invalid JSON response from external API:', responseText.substring(0, 200));
+      return res.status(500).json({ error: "Invalid response from recommendation service" });
+    }
     const internshipsCollection = db.collection(process.env.COLLECTION_NAME);
 
     const projection = { 
@@ -83,6 +95,12 @@ router.post("/recommend", authenticateToken, async (req, res) => {
       remote_work_allowed: 1, 
       certificate_provided: 1 
     };
+
+    // Validate API response structure
+    if (!data.recommendations) {
+      console.error('Invalid API response structure:', data);
+      return res.status(500).json({ error: "Invalid recommendation data received" });
+    }
 
     // Process both nearby and remote internships in parallel
     const [nearbyInternships, remoteInternships] = await Promise.all([
