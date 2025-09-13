@@ -62,7 +62,7 @@ GET /db-status
 #### 3. User Registration
 
 ```http
-POST  /users/register
+POST /users/register
 ```
 
 **Auth**: None  
@@ -104,7 +104,7 @@ POST  /users/register
 #### 4. User Login
 
 ```http
-POST  /users/login
+POST /users/login
 ```
 
 **Auth**: None  
@@ -139,7 +139,7 @@ POST  /users/login
 #### 5. Update Profile
 
 ```http
-POST  /users/profile/update
+POST /users/profile/update
 ```
 
 **Auth**: Bearer Token Required  
@@ -201,7 +201,7 @@ POST  /users/profile/update
 #### 6. Get Internships (Paginated)
 
 ```http
-GET  /recommendations/internships?page=1
+GET /recommendations/internships?page=1
 ```
 
 **Auth**: None  
@@ -250,7 +250,7 @@ GET  /recommendations/internships?page=1
 #### 7. Get Personalized Recommendations
 
 ```http
-POST  /recommendations/recommend
+POST /recommendations/recommend
 ```
 
 **Auth**: Bearer Token Required  
@@ -334,7 +334,7 @@ POST  /recommendations/recommend
 #### 8. Clear Cache
 
 ```http
-DELETE  /recommendations/cache/clear
+DELETE /recommendations/cache/clear
 ```
 
 **Auth**: Bearer Token Required  
@@ -356,23 +356,23 @@ DELETE  /recommendations/cache/clear
 
 ```bash
 # 1. Register User
-curl -X POST http://localhost:3000 /users/register \
+curl -X POST http://localhost:3000/users/register \
   -H "Content-Type: application/json" \
   -d '{"username":"testuser","email":"test@example.com","password":"test123","confirmPassword":"test123"}'
 
 # 2. Login
-curl -X POST http://localhost:3000 /users/login \
+curl -X POST http://localhost:3000/users/login \
   -H "Content-Type: application/json" \
   -d '{"email":"test@example.com","password":"test123"}'
 
 # 3. Update Profile (replace TOKEN)
-curl -X POST http://localhost:3000 /users/profile/update \
+curl -X POST http://localhost:3000/users/profile/update \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"skills":["JavaScript","React"],"sectors":["technology"],"location":"Mumbai"}'
 
 # 4. Get Recommendations (replace TOKEN)
-curl -X POST http://localhost:3000 /recommendations/recommend \
+curl -X POST http://localhost:3000/recommendations/recommend \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"max_distance_km":150}'
