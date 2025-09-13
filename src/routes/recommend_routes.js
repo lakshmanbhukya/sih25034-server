@@ -144,25 +144,31 @@ router.post("/recommend", authenticateToken, async (req, res) => {
   }
 });
 
-// Get internships with pagination (10 per page)
+// Get internships with pagination (10 per page) - with Redis caching
 router.get("/internships", async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = 10;
     const skip = (page - 1) * limit;
     
+    // Create cache key for this page
+    const cacheKey = `internships:page:${page}`;
+    
+    // Check cache first
+    const cachedResult = cache.get(cacheKey);
+    if (cachedResult) {
+      return res.json(cachedResult);
+    }
+    
     const db = getDB();
     const collection = db.collection(process.env.COLLECTION_NAME);
     
-    const internships = await collection
-      .find({})
-      .skip(skip)
-      .limit(limit)
-      .toArray();
+    const [internships, total] = await Promise.all([
+      collection.find({}).skip(skip).limit(limit).toArray(),
+      collection.countDocuments()
+    ]);
     
-    const total = await collection.countDocuments();
-    
-    res.json({
+    const result = {
       internships,
       pagination: {
         current_page: page,
@@ -171,30 +177,160 @@ router.get("/internships", async (req, res) => {
         has_next: page < Math.ceil(total / limit),
         has_prev: page > 1
       }
-    });
+    };
+    
+    // Cache for 10 minutes
+    cache.set(cacheKey, result, 10);
+    
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: "Failed to fetch internships" });
   }
 });
 
-// Get recommended internships (dummy logic, can be replaced with real recommendation)
+// Get recommended internships - with caching (preserves external API order)
 router.get("/internships/recommended", async (req, res) => {
   try {
-    // For now, just return a subset or use your own logic
+    const cacheKey = "recommended:internships";
+    
+    // Check cache first
+    const cachedResult = cache.get(cacheKey);
+    if (cachedResult) {
+      return res.json(cachedResult);
+    }
+    
     const db = getDB();
     const collection = db.collection(process.env.COLLECTION_NAME);
-    // Example: return first 1 as recommended
-    const recommended = await collection.find({}).limit(1).toArray();
+    
+    // Get internships without sorting (preserves natural order/similarity score)
+    const recommended = await collection
+      .find({})
+      .limit(10)
+      .toArray();
+    
+    // Cache for 30 minutes
+    cache.set(cacheKey, recommended, 30);
+    
     res.json(recommended);
   } catch (err) {
     res.status(500).json({ error: "Failed to fetch recommended internships" });
   }
 });
 
-// Clear cache endpoint (for testing/admin)
+// Search internships - with Redis caching
+router.get("/search", async (req, res) => {
+  try {
+    const { q, sector, location, mode, min_stipend, max_stipend, page = 1 } = req.query;
+    const limit = 10;
+    const skip = (page - 1) * limit;
+    
+    // Create cache key for this search
+    const searchParams = { q, sector, location, mode, min_stipend, max_stipend, page };
+    const cacheKey = `search:${JSON.stringify(searchParams)}`;
+    
+    // Check cache first
+    const cachedResult = cache.get(cacheKey);
+    if (cachedResult) {
+      return res.json(cachedResult);
+    }
+    
+    const db = getDB();
+    const collection = db.collection(process.env.COLLECTION_NAME);
+    
+    // Build search query
+    const searchQuery = {};
+    
+    if (q) {
+      searchQuery.$or = [
+        { title: { $regex: q, $options: "i" } },
+        { company_name: { $regex: q, $options: "i" } },
+        { description: { $regex: q, $options: "i" } },
+        { skills: { $in: [new RegExp(q, "i")] } }
+      ];
+    }
+    
+    if (sector) searchQuery.sector = { $regex: sector, $options: "i" };
+    if (location) searchQuery.location_city = { $regex: location, $options: "i" };
+    if (mode) searchQuery.mode = { $regex: mode, $options: "i" };
+    
+    if (min_stipend || max_stipend) {
+      searchQuery.stipend = {};
+      if (min_stipend) searchQuery.stipend.$gte = parseInt(min_stipend);
+      if (max_stipend) searchQuery.stipend.$lte = parseInt(max_stipend);
+    }
+    
+    const [internships, total] = await Promise.all([
+      collection.find(searchQuery).skip(skip).limit(limit).toArray(),
+      collection.countDocuments(searchQuery)
+    ]);
+    
+    const result = {
+      internships,
+      pagination: {
+        current_page: parseInt(page),
+        total_pages: Math.ceil(total / limit),
+        total_results: total,
+        has_next: page < Math.ceil(total / limit),
+        has_prev: page > 1
+      },
+      search_params: { q, sector, location, mode, min_stipend, max_stipend }
+    };
+    
+    // Cache search results for 5 minutes
+    cache.set(cacheKey, result, 5);
+    
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: "Search failed" });
+  }
+});
+
+// Cache status endpoint
+router.get("/cache/status", (req, res) => {
+  try {
+    // Test cache functionality
+    const testKey = "test:cache:" + Date.now();
+    cache.set(testKey, { test: "data", timestamp: new Date() }, 1);
+    const testResult = cache.get(testKey);
+    
+    res.json({
+      cache_type: "In-Memory Cache",
+      status: testResult ? "Working" : "Failed",
+      test_data: testResult,
+      cache_size: cache.cache ? cache.cache.size : "Unknown"
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      cache_type: "In-Memory Cache",
+      status: "Error", 
+      error: error.message 
+    });
+  }
+});
+
+// Clear cache endpoints
 router.delete("/cache/clear", authenticateToken, (req, res) => {
-  cache.clear();
-  res.json({ message: "Cache cleared successfully" });
+  const { pattern, type } = req.query;
+  
+  let cleared = 0;
+  let message = "";
+  
+  if (type === "expired") {
+    cleared = cache.clearExpired();
+    message = `Cleared ${cleared} expired entries`;
+  } else if (pattern) {
+    cleared = cache.clearByPattern(pattern);
+    message = `Cleared ${cleared} entries matching pattern: ${pattern}`;
+  } else {
+    cache.clear();
+    message = "All cache cleared successfully";
+  }
+  
+  res.json({ 
+    message,
+    cleared_count: cleared || "all",
+    timestamp: new Date().toISOString()
+  });
 });
 
 module.exports = router;
