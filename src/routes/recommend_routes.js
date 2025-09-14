@@ -303,6 +303,44 @@ router.get("/search", async (req, res) => {
   }
 });
 
+// Get internship by ID - with caching
+router.get("/internships/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Create cache key for this internship
+    const cacheKey = `internship:${id}`;
+    
+    // Check cache first
+    const cachedResult = cache.get(cacheKey);
+    if (cachedResult) {
+      return res.json(cachedResult);
+    }
+    
+    const db = getDB();
+    const collection = db.collection(process.env.COLLECTION_NAME);
+    
+    // Find internship by MongoDB ObjectId or internship_id
+    let internship;
+    if (ObjectId.isValid(id)) {
+      internship = await collection.findOne({ _id: new ObjectId(id) });
+    } else {
+      internship = await collection.findOne({ internship_id: parseInt(id) });
+    }
+    
+    if (!internship) {
+      return res.status(404).json({ error: "Internship not found" });
+    }
+    
+    // Cache for 15 minutes
+    cache.set(cacheKey, internship, 15);
+    
+    res.json(internship);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch internship" });
+  }
+});
+
 // Cache status endpoint
 router.get("/cache/status", (req, res) => {
   try {
