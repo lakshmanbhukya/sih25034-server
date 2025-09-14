@@ -49,6 +49,10 @@ router.post("/recommend", authenticateToken, async (req, res) => {
       return res.json(cachedResult);
     }
 
+    // Log API payload for debugging
+    console.log('🔍 API Payload:', JSON.stringify(apiPayload, null, 2));
+    console.log('🌐 MODEL_URL:', process.env.MODEL_URL);
+
     // Call external recommendation API
     const response = await fetch(process.env.MODEL_URL, {
       method: "POST",
@@ -59,18 +63,32 @@ router.post("/recommend", authenticateToken, async (req, res) => {
       body: JSON.stringify(apiPayload),
     });
 
+    console.log('📡 External API Response Status:', response.status, response.statusText);
+
     if (!response.ok) {
-      console.error(`External API error: ${response.status} ${response.statusText}`);
-      return res.status(500).json({ error: "External recommendation service unavailable" });
+      const errorText = await response.text();
+      console.error(`❌ External API error: ${response.status} ${response.statusText}`);
+      console.error('📄 Error response:', errorText.substring(0, 500));
+      return res.status(500).json({ 
+        error: "External recommendation service unavailable",
+        details: `API returned ${response.status}: ${response.statusText}`,
+        debug_info: process.env.NODE_ENV === 'development' ? errorText.substring(0, 200) : undefined
+      });
     }
 
     const responseText = await response.text();
+    console.log('📝 External API Response:', responseText.substring(0, 300));
+    
     let data;
     try {
       data = JSON.parse(responseText);
+      console.log('✅ Successfully parsed API response');
     } catch (parseError) {
-      console.error('Invalid JSON response from external API:', responseText.substring(0, 200));
-      return res.status(500).json({ error: "Invalid response from recommendation service" });
+      console.error('❌ Invalid JSON response from external API:', responseText.substring(0, 200));
+      return res.status(500).json({ 
+        error: "Invalid response from recommendation service",
+        debug_info: process.env.NODE_ENV === 'development' ? responseText.substring(0, 200) : undefined
+      });
     }
     const internshipsCollection = db.collection(process.env.COLLECTION_NAME);
 
@@ -304,6 +322,46 @@ router.get("/cache/status", (req, res) => {
       cache_type: "In-Memory Cache",
       status: "Error", 
       error: error.message 
+    });
+  }
+});
+
+// Test external API endpoint (for debugging)
+router.post("/test-external-api", authenticateToken, async (req, res) => {
+  try {
+    const testPayload = {
+      skills: "javascript react",
+      sectors: "technology",
+      education_level: "12th",
+      city_name: "Mumbai",
+      max_distance_km: 150
+    };
+    
+    console.log('🧪 Testing external API with payload:', testPayload);
+    console.log('🌐 MODEL_URL:', process.env.MODEL_URL);
+    
+    const response = await fetch(process.env.MODEL_URL, {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(testPayload),
+    });
+    
+    const responseText = await response.text();
+    
+    res.json({
+      status: response.status,
+      statusText: response.statusText,
+      headers: Object.fromEntries(response.headers.entries()),
+      body: responseText.substring(0, 1000),
+      model_url: process.env.MODEL_URL
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      error: error.message,
+      stack: error.stack
     });
   }
 });
