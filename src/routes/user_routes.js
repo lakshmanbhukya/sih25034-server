@@ -106,36 +106,121 @@ router.post("/login", async (req, res) => {
 // Profile update route (skills, sectors, education, location) - protected
 router.post("/profile/update", authenticateToken, async (req, res) => {
   try {
+    console.log('📄 Profile update request body:', JSON.stringify(req.body, null, 2));
+    console.log('👤 User ID from token:', req.user.userId);
+    
     const { skills, sectors, education, location } = req.body;
     
+    // Validate at least one field is provided
+    if (!skills && !sectors && !education && !location) {
+      return res.status(400).json({ error: "At least one field (skills, sectors, education, location) is required" });
+    }
+    
     const updateFields = {};
-    if (skills) updateFields.skills = Array.isArray(skills) ? skills : [skills];
-    if (sectors) updateFields.sectors = Array.isArray(sectors) ? sectors : [sectors];
-    if (education) updateFields.education = education;
-    if (location) updateFields.location = location;
+    if (skills) {
+      updateFields.skills = Array.isArray(skills) ? skills : [skills];
+      console.log('✅ Skills to update:', updateFields.skills);
+    }
+    if (sectors) {
+      updateFields.sectors = Array.isArray(sectors) ? sectors : [sectors];
+      console.log('✅ Sectors to update:', updateFields.sectors);
+    }
+    if (education) {
+      updateFields.education = education;
+      console.log('✅ Education to update:', updateFields.education);
+    }
+    if (location) {
+      updateFields.location = location;
+      console.log('✅ Location to update:', updateFields.location);
+    }
+    
+    console.log('🔄 Final update fields:', JSON.stringify(updateFields, null, 2));
     
     const db = getDB();
     const users = db.collection(USERS_COLLECTION);
     const { ObjectId } = require("mongodb");
+    
+    // Check if user exists first
+    const existingUser = await users.findOne({ _id: new ObjectId(req.user.userId) });
+    if (!existingUser) {
+      console.error('❌ User not found in database:', req.user.userId);
+      return res.status(404).json({ error: "User not found." });
+    }
+    
+    console.log('👤 User found, current profile:', {
+      skills: existingUser.skills,
+      sectors: existingUser.sectors,
+      education: existingUser.education,
+      location: existingUser.location
+    });
     
     const result = await users.updateOne(
       { _id: new ObjectId(req.user.userId) },
       { $set: updateFields }
     );
     
+    console.log('📊 Update result:', {
+      matchedCount: result.matchedCount,
+      modifiedCount: result.modifiedCount,
+      acknowledged: result.acknowledged
+    });
+    
     if (result.matchedCount === 0) {
       return res.status(404).json({ error: "User not found." });
     }
     
-    // Clear user's cached recommendations since profile changed
-    const cachePattern = `recommendations:${req.user.userId}:`;
-    // Simple cache invalidation - clear all cache (in production, use pattern matching)
-    cache.clear();
+    // Verify the update by fetching the user again
+    const updatedUser = await users.findOne({ _id: new ObjectId(req.user.userId) });
+    console.log('✅ Updated user profile:', {
+      skills: updatedUser.skills,
+      sectors: updatedUser.sectors,
+      education: updatedUser.education,
+      location: updatedUser.location
+    });
     
-    res.json({ message: "Profile updated successfully" });
+    // Clear user's cached recommendations since profile changed
+    cache.clear();
+    console.log('🗑️ Cache cleared');
+    
+    res.json({ 
+      message: "Profile updated successfully",
+      updated_fields: Object.keys(updateFields),
+      modified_count: result.modifiedCount
+    });
   } catch (err) {
-    console.error("Profile update error:", err);
-    res.status(500).json({ error: "Profile update failed." });
+    console.error("❌ Profile update error:", err);
+    res.status(500).json({ error: "Profile update failed.", details: err.message });
+  }
+});
+
+// Get current user profile - protected
+router.get("/profile", authenticateToken, async (req, res) => {
+  try {
+    const db = getDB();
+    const users = db.collection(USERS_COLLECTION);
+    const { ObjectId } = require("mongodb");
+    
+    const user = await users.findOne(
+      { _id: new ObjectId(req.user.userId) },
+      { projection: { password: 0 } } // Exclude password from response
+    );
+    
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    
+    res.json({
+      user_id: user._id,
+      username: user.username,
+      email: user.email,
+      skills: user.skills || [],
+      sectors: user.sectors || [],
+      education: user.education || {},
+      location: user.location || ""
+    });
+  } catch (err) {
+    console.error("Get profile error:", err);
+    res.status(500).json({ error: "Failed to get profile" });
   }
 });
 
