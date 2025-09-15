@@ -22,20 +22,31 @@ function authenticateToken(req, res, next) {
 // /recommend API route - Protected with caching
 router.post("/recommend", authenticateToken, async (req, res) => {
   try {
+    console.log('🔍 Recommend API called by user:', req.user.userId);
+    console.log('📋 Request body:', JSON.stringify(req.body, null, 2));
+    
     const db = getDB();
     const usersCollection = db.collection(process.env.USERS_COLLECTION);
     
     // Get user data from database
     const user = await usersCollection.findOne({ _id: new ObjectId(req.user.userId) });
     if (!user) {
+      console.error('❌ User not found in database:', req.user.userId);
       return res.status(404).json({ error: "User not found" });
     }
+    
+    console.log('👤 User profile found:', {
+      skills: user.skills,
+      sectors: user.sectors,
+      education: user.education,
+      location: user.location
+    });
 
     // Prepare data for external API based on user model field names
     const apiPayload = {
       skills: Array.isArray(user.skills) ? user.skills.join(" ") : user.skills || "",
       sectors: Array.isArray(user.sectors) ? user.sectors[0] : user.sectors || "",
-      education_level: user.education?.twelfth ? "12th" : user.education?.tenth ? "10th" : "graduate",
+      education_level: user.education || "graduate",
       city_name: user.location || "",
       max_distance_km: req.body.max_distance_km || 150
     };
@@ -72,39 +83,101 @@ router.post("/recommend", authenticateToken, async (req, res) => {
       
       // Fallback: Return similar internships from database
       console.log('🔄 Using fallback recommendation logic...');
-      const db = getDB();
       const internshipsCollection = db.collection(process.env.COLLECTION_NAME);
       
-      // Build fallback query based on user profile
-      const fallbackQuery = {};
-      if (user.sectors && user.sectors.length > 0) {
-        fallbackQuery.sector = { $in: user.sectors };
-      }
-      if (user.location) {
-        fallbackQuery.location_city = { $regex: user.location, $options: "i" };
+      // Build fallback queries based on user profile
+      const fallbackQueries = [];
+      
+      // Query 1: Match by sectors and location
+      if (user.sectors && user.sectors.length > 0 && user.location) {
+        fallbackQueries.push({
+          sector: { $in: user.sectors.map(s => new RegExp(s, 'i')) },
+          location_city: { $regex: user.location, $options: "i" }
+        });
       }
       
-      const fallbackInternships = await internshipsCollection
-        .find(fallbackQuery)
-        .limit(5)
-        .toArray();
+      // Query 2: Match by sectors only
+      if (user.sectors && user.sectors.length > 0) {
+        fallbackQueries.push({
+          sector: { $in: user.sectors.map(s => new RegExp(s, 'i')) }
+        });
+      }
+      
+      // Query 3: Match by location only
+      if (user.location) {
+        fallbackQueries.push({
+          location_city: { $regex: user.location, $options: "i" }
+        });
+      }
+      
+      // Query 4: Match by skills
+      if (user.skills && user.skills.length > 0) {
+        fallbackQueries.push({
+          skills: { $in: user.skills.map(s => new RegExp(s, 'i')) }
+        });
+      }
+      
+      // If no specific criteria, get general internships
+      if (fallbackQueries.length === 0) {
+        fallbackQueries.push({});
+      }
+      
+      console.log('🔍 Fallback queries:', JSON.stringify(fallbackQueries, null, 2));
+      
+      let fallbackInternships = [];
+      
+      // Try each query until we get results
+      for (const query of fallbackQueries) {
+        const results = await internshipsCollection
+          .find(query)
+          .limit(10)
+          .toArray();
+        
+        if (results.length > 0) {
+          fallbackInternships = results;
+          console.log(`✅ Found ${results.length} fallback internships with query:`, JSON.stringify(query, null, 2));
+          break;
+        }
+      }
+      
+      // Separate nearby and remote internships
+      const nearbyInternships = fallbackInternships.filter(i => 
+        user.location && i.location_city && 
+        i.location_city.toLowerCase().includes(user.location.toLowerCase())
+      );
+      
+      const remoteInternships = fallbackInternships.filter(i => 
+        i.mode && (i.mode.toLowerCase().includes('remote') || i.remote_work_allowed)
+      );
+      
+      // If we don't have enough nearby, add some from the general results
+      const remainingInternships = fallbackInternships.filter(i => 
+        !nearbyInternships.includes(i) && !remoteInternships.includes(i)
+      );
+      
+      // Fill up nearby if needed
+      while (nearbyInternships.length < 5 && remainingInternships.length > 0) {
+        nearbyInternships.push(remainingInternships.shift());
+      }
       
       const fallbackResult = {
         recommendations: {
-          nearby_ids: fallbackInternships.map(i => i._id.toString()),
-          remote_ids: [],
-          nearby_internships: fallbackInternships,
-          remote_internships: []
+          nearby_ids: nearbyInternships.map(i => i._id.toString()),
+          remote_ids: remoteInternships.map(i => i._id.toString()),
+          nearby_internships: nearbyInternships,
+          remote_internships: remoteInternships
         },
         user_profile: {
-          skills: user.skills,
-          sectors: user.sectors,
-          education_level: apiPayload.education_level,
-          location: user.location
+          skills: user.skills || [],
+          sectors: user.sectors || [],
+          education_level: user.education || "graduate",
+          location: user.location || ""
         },
         fallback_mode: true,
         message: "Using fallback recommendations due to external service unavailability"
       };
+      
+      console.log(`✅ Fallback result: ${nearbyInternships.length} nearby, ${remoteInternships.length} remote internships`);
       
       // Cache fallback result for 2 minutes only
       cache.set(cacheKey, fallbackResult, 2);
@@ -181,10 +254,10 @@ router.post("/recommend", authenticateToken, async (req, res) => {
         remote_internships: data.recommendations.remote_internships || []
       },
       user_profile: {
-        skills: user.skills,
-        sectors: user.sectors,
-        education_level: apiPayload.education_level,
-        location: user.location
+        skills: user.skills || [],
+        sectors: user.sectors || [],
+        education_level: user.education || "graduate",
+        location: user.location || ""
       }
     };
 

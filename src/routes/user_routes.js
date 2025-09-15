@@ -16,7 +16,7 @@ class User {
     password,
     skills = [],
     sectors = [],
-    education = {},
+    education = "",
     location = "",
   }) {
     this.username = username; // String
@@ -24,11 +24,7 @@ class User {
     this.password = password; // Hashed String
     this.skills = skills; // Array of strings
     this.sectors = sectors; // Array of strings
-    this.education = {
-      tenth: education.tenth || {}, // { board, year, percentage }
-      twelfth: education.twelfth || {}, // { board, year, percentage }
-      graduate: education.graduate || {}, // { degree, year, percentage, college }
-    };
+    this.education = education; // String: "10th", "12th", "diploma", "graduate"
     this.location = location; // String
   }
 }
@@ -215,7 +211,7 @@ router.get("/profile", authenticateToken, async (req, res) => {
       email: user.email,
       skills: user.skills || [],
       sectors: user.sectors || [],
-      education: user.education || {},
+      education: user.education || "",
       location: user.location || ""
     });
   } catch (err) {
