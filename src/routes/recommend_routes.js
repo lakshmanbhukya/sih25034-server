@@ -69,11 +69,47 @@ router.post("/recommend", authenticateToken, async (req, res) => {
       const errorText = await response.text();
       console.error(`❌ External API error: ${response.status} ${response.statusText}`);
       console.error('📄 Error response:', errorText.substring(0, 500));
-      return res.status(500).json({ 
-        error: "External recommendation service unavailable",
-        details: `API returned ${response.status}: ${response.statusText}`,
-        debug_info: process.env.NODE_ENV === 'development' ? errorText.substring(0, 200) : undefined
-      });
+      
+      // Fallback: Return similar internships from database
+      console.log('🔄 Using fallback recommendation logic...');
+      const db = getDB();
+      const internshipsCollection = db.collection(process.env.COLLECTION_NAME);
+      
+      // Build fallback query based on user profile
+      const fallbackQuery = {};
+      if (user.sectors && user.sectors.length > 0) {
+        fallbackQuery.sector = { $in: user.sectors };
+      }
+      if (user.location) {
+        fallbackQuery.location_city = { $regex: user.location, $options: "i" };
+      }
+      
+      const fallbackInternships = await internshipsCollection
+        .find(fallbackQuery)
+        .limit(5)
+        .toArray();
+      
+      const fallbackResult = {
+        recommendations: {
+          nearby_ids: fallbackInternships.map(i => i._id.toString()),
+          remote_ids: [],
+          nearby_internships: fallbackInternships,
+          remote_internships: []
+        },
+        user_profile: {
+          skills: user.skills,
+          sectors: user.sectors,
+          education_level: apiPayload.education_level,
+          location: user.location
+        },
+        fallback_mode: true,
+        message: "Using fallback recommendations due to external service unavailability"
+      };
+      
+      // Cache fallback result for 2 minutes only
+      cache.set(cacheKey, fallbackResult, 2);
+      
+      return res.json(fallbackResult);
     }
 
     const responseText = await response.text();
