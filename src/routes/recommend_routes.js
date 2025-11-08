@@ -5,6 +5,7 @@ const { ObjectId } = require("mongodb");
 const fetch = require("node-fetch");
 const jwt = require("jsonwebtoken");
 const cache = require("../../redis/cache");
+const MessagePackUtil = require("../../utils/messagepack");
 const dotenv = require("dotenv");
 dotenv.config();
 
@@ -64,15 +65,38 @@ router.post("/recommend", authenticateToken, async (req, res) => {
     console.log('🔍 API Payload:', JSON.stringify(apiPayload, null, 2));
     console.log('🌐 MODEL_URL:', process.env.MODEL_URL);
 
-    // Call external recommendation API
-    const response = await fetch(process.env.MODEL_URL, {
-      method: "POST",
-      headers: {
-        accept: "application/json",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(apiPayload),
-    });
+    // Call external recommendation API with MessagePack for faster communication
+    let response;
+    let usingMessagePack = false;
+    
+    try {
+      // Try MessagePack first for better performance
+      const msgpackBody = MessagePackUtil.encode(apiPayload);
+      console.log(`📦 Using MessagePack (${msgpackBody.length} bytes vs ${JSON.stringify(apiPayload).length} bytes JSON)`);
+      
+      response = await fetch(process.env.MODEL_URL, {
+        method: "POST",
+        headers: {
+          ...MessagePackUtil.getHeaders(),
+          "accept": "application/msgpack,application/json"
+        },
+        body: msgpackBody,
+      });
+      
+      usingMessagePack = true;
+    } catch (msgpackError) {
+      console.log('🔄 MessagePack failed, falling back to JSON:', msgpackError.message);
+      
+      // Fallback to JSON if MessagePack fails
+      response = await fetch(process.env.MODEL_URL, {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(apiPayload),
+      });
+    }
 
     console.log('📡 External API Response Status:', response.status, response.statusText);
 
@@ -185,18 +209,27 @@ router.post("/recommend", authenticateToken, async (req, res) => {
       return res.json(fallbackResult);
     }
 
-    const responseText = await response.text();
-    console.log('📝 External API Response:', responseText.substring(0, 300));
-    
     let data;
+    const contentType = response.headers.get('content-type') || '';
+    
     try {
-      data = JSON.parse(responseText);
-      console.log('✅ Successfully parsed API response');
+      if (usingMessagePack && contentType.includes('application/msgpack')) {
+        // Handle MessagePack response
+        const buffer = await response.buffer();
+        data = MessagePackUtil.decode(buffer);
+        console.log(`✅ Successfully parsed MessagePack response (${buffer.length} bytes)`);
+      } else {
+        // Handle JSON response
+        const responseText = await response.text();
+        console.log('📝 External API Response:', responseText.substring(0, 300));
+        data = JSON.parse(responseText);
+        console.log('✅ Successfully parsed JSON response');
+      }
     } catch (parseError) {
-      console.error('❌ Invalid JSON response from external API:', responseText.substring(0, 200));
+      console.error('❌ Failed to parse API response:', parseError.message);
       return res.status(500).json({ 
         error: "Invalid response from recommendation service",
-        debug_info: process.env.NODE_ENV === 'development' ? responseText.substring(0, 200) : undefined
+        debug_info: process.env.NODE_ENV === 'development' ? parseError.message : undefined
       });
     }
     const internshipsCollection = db.collection(process.env.COLLECTION_NAME);
@@ -473,7 +506,7 @@ router.get("/cache/status", (req, res) => {
   }
 });
 
-// Test external API endpoint (for debugging)
+// Test external API endpoint (for debugging) - with MessagePack support
 router.post("/test-external-api", authenticateToken, async (req, res) => {
   try {
     const testPayload = {
@@ -487,29 +520,146 @@ router.post("/test-external-api", authenticateToken, async (req, res) => {
     console.log('🧪 Testing external API with payload:', testPayload);
     console.log('🌐 MODEL_URL:', process.env.MODEL_URL);
     
-    const response = await fetch(process.env.MODEL_URL, {
-      method: "POST",
-      headers: {
-        accept: "application/json",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(testPayload),
-    });
+    const results = {};
     
-    const responseText = await response.text();
+    // Test MessagePack
+    try {
+      const msgpackBody = MessagePackUtil.encode(testPayload);
+      const msgpackResponse = await fetch(process.env.MODEL_URL, {
+        method: "POST",
+        headers: {
+          ...MessagePackUtil.getHeaders(),
+          "accept": "application/msgpack,application/json"
+        },
+        body: msgpackBody,
+      });
+      
+      const contentType = msgpackResponse.headers.get('content-type') || '';
+      let responseData;
+      
+      if (contentType.includes('application/msgpack')) {
+        const buffer = await msgpackResponse.buffer();
+        responseData = MessagePackUtil.decode(buffer);
+        results.messagepack = {
+          status: msgpackResponse.status,
+          success: true,
+          payload_size: msgpackBody.length,
+          response_size: buffer.length,
+          data: responseData
+        };
+      } else {
+        const text = await msgpackResponse.text();
+        results.messagepack = {
+          status: msgpackResponse.status,
+          success: false,
+          message: "API doesn't support MessagePack",
+          fallback_response: text.substring(0, 200)
+        };
+      }
+    } catch (msgpackError) {
+      results.messagepack = {
+        success: false,
+        error: msgpackError.message
+      };
+    }
+    
+    // Test JSON for comparison
+    try {
+      const jsonResponse = await fetch(process.env.MODEL_URL, {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(testPayload),
+      });
+      
+      const responseText = await jsonResponse.text();
+      results.json = {
+        status: jsonResponse.status,
+        success: jsonResponse.ok,
+        payload_size: JSON.stringify(testPayload).length,
+        response_size: responseText.length,
+        data: responseText.substring(0, 500)
+      };
+    } catch (jsonError) {
+      results.json = {
+        success: false,
+        error: jsonError.message
+      };
+    }
     
     res.json({
-      status: response.status,
-      statusText: response.statusText,
-      headers: Object.fromEntries(response.headers.entries()),
-      body: responseText.substring(0, 1000),
-      model_url: process.env.MODEL_URL
+      model_url: process.env.MODEL_URL,
+      test_payload: testPayload,
+      results
     });
   } catch (error) {
     res.status(500).json({ 
       error: error.message,
       stack: error.stack
     });
+  }
+});
+
+// MessagePack performance test endpoint
+router.get("/messagepack/performance", authenticateToken, async (req, res) => {
+  try {
+    const sampleData = {
+      skills: "javascript react node.js python machine learning data science",
+      sectors: "technology",
+      education_level: "graduate",
+      city_name: "Mumbai",
+      max_distance_km: 150,
+      additional_data: Array(100).fill({
+        id: Math.random(),
+        name: "Sample internship data",
+        description: "This is sample data to test MessagePack performance vs JSON"
+      })
+    };
+    
+    // JSON serialization
+    const jsonStart = Date.now();
+    const jsonString = JSON.stringify(sampleData);
+    const jsonTime = Date.now() - jsonStart;
+    
+    // MessagePack serialization
+    const msgpackStart = Date.now();
+    const msgpackBuffer = MessagePackUtil.encode(sampleData);
+    const msgpackTime = Date.now() - msgpackStart;
+    
+    // JSON deserialization
+    const jsonParseStart = Date.now();
+    JSON.parse(jsonString);
+    const jsonParseTime = Date.now() - jsonParseStart;
+    
+    // MessagePack deserialization
+    const msgpackParseStart = Date.now();
+    MessagePackUtil.decode(msgpackBuffer);
+    const msgpackParseTime = Date.now() - msgpackParseStart;
+    
+    res.json({
+      performance_comparison: {
+        json: {
+          size_bytes: jsonString.length,
+          serialize_time_ms: jsonTime,
+          deserialize_time_ms: jsonParseTime,
+          total_time_ms: jsonTime + jsonParseTime
+        },
+        messagepack: {
+          size_bytes: msgpackBuffer.length,
+          serialize_time_ms: msgpackTime,
+          deserialize_time_ms: msgpackParseTime,
+          total_time_ms: msgpackTime + msgpackParseTime
+        },
+        improvement: {
+          size_reduction_percent: ((jsonString.length - msgpackBuffer.length) / jsonString.length * 100).toFixed(2),
+          speed_improvement_percent: (((jsonTime + jsonParseTime) - (msgpackTime + msgpackParseTime)) / (jsonTime + jsonParseTime) * 100).toFixed(2)
+        }
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -535,6 +685,24 @@ router.delete("/cache/clear", authenticateToken, (req, res) => {
     message,
     cleared_count: cleared || "all",
     timestamp: new Date().toISOString()
+  });
+});
+
+// MessagePack utility endpoint
+router.get("/messagepack/info", (req, res) => {
+  res.json({
+    messagepack_support: true,
+    library: "msgpack5",
+    benefits: [
+      "Faster serialization/deserialization",
+      "Smaller payload size (typically 20-50% smaller than JSON)",
+      "Binary format reduces network overhead",
+      "Better performance for backend-to-backend communication"
+    ],
+    usage: {
+      content_type: "application/msgpack",
+      fallback: "Automatically falls back to JSON if MessagePack fails"
+    }
   });
 });
 
