@@ -20,6 +20,7 @@
     "jsonwebtoken": "^9.0.2",
     "mongodb": "^6.19.0",
     "mongoose": "^8.18.1",
+    "msgpack5": "^6.0.2",
     "node-fetch": "^2.7.0",
     "redis": "^5.8.2"
   },
