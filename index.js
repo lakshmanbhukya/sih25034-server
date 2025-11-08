@@ -3,6 +3,7 @@ const cors = require("cors");
 const { connectDB, getDB } = require("./connections/connection");
 const userRoutes = require("./src/routes/user_routes");
 const recommendRoutes = require("./src/routes/recommend_routes");
+const { messagePackMiddleware, addMessagePackResponse } = require("./middleware/messagepack");
 require("dotenv").config();
 
 const app = express();
@@ -14,6 +15,8 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: false
 }));
+app.use(messagePackMiddleware); // Handle MessagePack requests
+app.use(addMessagePackResponse); // Add MessagePack response helper
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
